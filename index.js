@@ -20,7 +20,12 @@ const app = express()
 app.use(bodyParser.json())
 app.use(cors({ origin: '*', credentials: true }))
 
+console.log(ffmpegPath);
+
 ffmpeg.setFfmpegPath(ffmpegPath)
+
+// Temp solution
+ffmpeg.setFfprobePath('/usr/bin/ffprobe')
 
 // Move to env file if needed
 const muxDomain = 'https://stream.mux.com'
