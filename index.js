@@ -1,18 +1,10 @@
-const fs = require('fs');
-const path = require('path')
-
 const express = require('express')
 // const { body, validationResult } = require('express-validator')
 
 const cors = require('cors')
 const bodyParser = require('body-parser')
 
-const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path
-const ffmpeg = require('fluent-ffmpeg')
-
-const { v1: uuidv1 } = require('uuid')
-const request = require('request')
-
+const { cutVideo, downloadVideo, deleteFilesAsync, mergeVideos, uploadVideo } = require('./ffmpeg')
 const { createResponce } = require('./utils')
 
 const app = express()
@@ -20,55 +12,49 @@ const app = express()
 app.use(bodyParser.json())
 app.use(cors({ origin: '*', credentials: true }))
 
-console.log(ffmpegPath);
-
-ffmpeg.setFfmpegPath(ffmpegPath)
-
-// Temp solution
-ffmpeg.setFfprobePath('/usr/bin/ffprobe')
-
-// Move to env file if needed
-const muxDomain = 'https://stream.mux.com'
-const m3u8Format = 'm3u8'
-const mp4Format = 'mp4'
-
 app.post('/cut', (req, res) => {
   const { body: { playbackId, duration, uploadUrl } } = req
 
-  const outputPath = path.join(__dirname, `${uuidv1()}.${mp4Format}`)
-
-  ffmpeg()
-    .input(`${muxDomain}/${playbackId}.${m3u8Format}`)
-    .inputOptions([`-t ${duration}`])
-    .output(outputPath)
-    .on('end', () =>
-      fs.createReadStream(outputPath)
-        .pipe(request.put(uploadUrl))
-        .on('end', () => fs.unlink(outputPath, () => createResponce(res)))
-        .on('error', (error) => fs.unlink(outputPath, () => createResponce(res, error))))
-    .on('error', (error) => fs.unlink(outputPath, () => createResponce(res, error)))
-    .run()
+  cutVideo({ playbackId, duration, uploadUrl }).then(
+    () => createResponce(res),
+    (error) => createResponce(res, error)
+  )
 })
 
 app.post('/merge', (req, res) => {
-  const { body: { ids, format } } = req
+  const { body: { links, uploadUrl } } = req
 
-  const outputPath = path.join(__dirname, `${uuidv1()}.${format}`)
+  const promises = links.map((link) => downloadVideo({ link }))
 
-  let ffmpegIns = ffmpeg()
-  ids.forEach((id) => ffmpegIns = ffmpegIns.input(id))
+  Promise.allSettled(promises).then((results) => {
+    const errors = []
+    const outputPaths = []
 
-  ffmpegIns
-    .on('end', () =>
-      fs.createReadStream(outputPath)
-        .pipe(request.put(uploadUrl))
-        .on('end', () => fs.unlink(outputPath, () => createResponce(res)))
-        .on('error', (error) => fs.unlink(outputPath, () => createResponce(res, error))))
-    .on('error', (error) => {
-      console.log(error);
-      fs.unlink(outputPath, () => createResponce(res, error))
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        errors.push(result.reason.error.message)
+        outputPaths.push(result.reason.outputPath)
+      } else if (result.status === 'fulfilled') outputPaths.push(result.value.outputPath)
     })
-    .mergeToFile(outputPath, __dirname);
+
+    if (errors.length) {
+      deleteFilesAsync(outputPaths).then(() => createResponce(res, { message: errors.join(' ') }))
+    } else {
+      mergeVideos({ inputPaths: outputPaths }).then(
+        ({ outputPath }) => {
+          const deletePaths = [...outputPaths, outputPath]
+
+          uploadVideo({ outputPath, uploadUrl }).then(
+            () => deleteFilesAsync(deletePaths).then(() => createResponce(res)),
+            (error) => deleteFilesAsync(deletePaths).then(() => createResponce(res, error))
+          )
+        },
+        ({ error, outputPath }) => {
+          deleteFilesAsync([...outputPaths, outputPath]).then(() => createResponce(res, error))
+        },
+      )
+    }
+  })
 });
 
 // Move to env file if needed
