@@ -45,6 +45,27 @@ app.post('/cut', (req, res) => {
     .run()
 })
 
+app.post('/merge', (req, res) => {
+  const { body: { ids, format } } = req
+
+  const outputPath = path.join(__dirname, `${uuidv1()}.${format}`)
+
+  let ffmpegIns = ffmpeg()
+  ids.forEach((id) => ffmpegIns = ffmpegIns.input(id))
+
+  ffmpegIns
+    .on('end', () =>
+      fs.createReadStream(outputPath)
+        .pipe(request.put(uploadUrl))
+        .on('end', () => fs.unlink(outputPath, () => createResponce(res)))
+        .on('error', (error) => fs.unlink(outputPath, () => createResponce(res, error))))
+    .on('error', (error) => {
+      console.log(error);
+      fs.unlink(outputPath, () => createResponce(res, error))
+    })
+    .mergeToFile(outputPath, __dirname);
+});
+
 // Move to env file if needed
 const port = 3000
 
